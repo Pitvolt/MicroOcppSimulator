@@ -8,21 +8,22 @@
 #include <MicroOcppMongooseClient.h>
 #include <string>
 #include <ArduinoJson.h>
+#include <MicroOcpp.h>
 #include <MicroOcpp/Debug.h>
-#include <MicroOcpp/Core/Configuration.h>
+#include <MicroOcpp/Model/Configuration/ConfigurationService.h>
 
 //cors_headers allow the browser to make requests from any domain, allowing all headers and all methods
 #define DEFAULT_HEADER "Content-Type: application/json\r\n"
 #define CORS_HEADERS "Access-Control-Allow-Origin: *\r\nAccess-Control-Allow-Headers:Access-Control-Allow-Headers, Origin,Accept, X-Requested-With, Content-Type, Access-Control-Request-Method, Access-Control-Request-Headers\r\nAccess-Control-Allow-Methods: GET,HEAD,OPTIONS,POST,PUT\r\n"
 
-MicroOcpp::MOcppMongooseClient *ao_sock = nullptr;
+MO_MG_Connection *wsClient = nullptr;
 const char *api_cert = "";
 const char *api_key = "";
 const char *api_user = "";
 const char *api_pass = "";
 
-void server_initialize(MicroOcpp::MOcppMongooseClient *osock, const char *cert, const char *key, const char *user, const char *pass) {
-    ao_sock = osock;
+void server_initialize(MO_MG_Connection *wsClientHandle, const char *cert, const char *key, const char *user, const char *pass) {
+    wsClient = wsClientHandle;
     api_cert = cert;
     api_key = key;
     api_user = user;
@@ -77,44 +78,45 @@ void http_serve(struct mg_connection *c, int ev, void *ev_data) {
         //start different api endpoints
         if(mg_match(message_data->uri, mg_str("/api/websocket"), NULL)){
             MO_DBG_VERBOSE("query websocket");
-            auto webSocketPingIntervalInt = MicroOcpp::declareConfiguration<int>("WebSocketPingInterval", 10, MO_WSCONN_FN);
-            auto reconnectIntervalInt = MicroOcpp::declareConfiguration<int>(MO_CONFIG_EXT_PREFIX "ReconnectInterval", 30, MO_WSCONN_FN);
-                    
+
             if (method == MicroOcpp::Method::POST) {
                 if (auto val = mg_json_get_str(json, "$.backendUrl")) {
-                    ao_sock->setBackendUrl(val);
+                    mo_setBackendUrl(wsClient, val);
                 }
                 if (auto val = mg_json_get_str(json, "$.chargeBoxId")) {
-                    ao_sock->setChargeBoxId(val);
+                    mo_setChargeBoxId(wsClient, val);
                 }
                 if (auto val = mg_json_get_str(json, "$.authorizationKey")) {
-                    ao_sock->setAuthKey(val);
+                    mo_setAuthKey(wsClient, val);
                 }
-                ao_sock->reloadConfigs();
+                mo_reloadUrl(wsClient);
                 {
                     auto val = mg_json_get_long(json, "$.pingInterval", -1);
                     if (val > 0) {
-                        webSocketPingIntervalInt->setInt(val);
+                        mo_setVarConfigInt(mo_getApiContext(), "OCPPCommCtrlr", "WebSocketPingInterval", "WebSocketPingInterval", val);
                     }
                 }
                 {
                     auto val = mg_json_get_long(json, "$.reconnectInterval", -1);
                     if (val > 0) {
-                        reconnectIntervalInt->setInt(val);
+                        mo_setVarConfigInt(mo_getApiContext(), "OCPPCommCtrlr", "RetryBackOffWaitMinimum", MO_CONFIG_EXT_PREFIX "ReconnectInterval", val);
                     }
                 }
                 if (auto val = mg_json_get_str(json, "$.dnsUrl")) {
                     MO_DBG_WARN("dnsUrl not implemented");
                     (void)val;
                 }
-                MicroOcpp::configuration_save();
             }
             StaticJsonDocument<256> doc;
-            doc["backendUrl"] = ao_sock->getBackendUrl();
-            doc["chargeBoxId"] = ao_sock->getChargeBoxId();
-            doc["authorizationKey"] = ao_sock->getAuthKey();
-            doc["pingInterval"] = webSocketPingIntervalInt->getInt();
-            doc["reconnectInterval"] = reconnectIntervalInt->getInt();
+            doc["backendUrl"] = mo_getBackendUrl(wsClient);
+            doc["chargeBoxId"] = mo_getChargeBoxId(wsClient);
+            doc["authorizationKey"] = mo_getAuthKey(wsClient);
+            int pingInterval = 0;
+            mo_getVarConfigInt(mo_getApiContext(), "OCPPCommCtrlr", "WebSocketPingInterval", "WebSocketPingInterval", &pingInterval);
+            doc["pingInterval"] = pingInterval;
+            int reconnectInterval = 0;
+            mo_getVarConfigInt(mo_getApiContext(), "OCPPCommCtrlr", "RetryBackOffWaitMinimum", MO_CONFIG_EXT_PREFIX "ReconnectInterval", &reconnectInterval);
+            doc["reconnectInterval"] = reconnectInterval;
             std::string serialized;
             serializeJson(doc, serialized);
             mg_http_reply(c, 200, final_headers, serialized.c_str());

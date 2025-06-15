@@ -7,7 +7,7 @@
 
 #include <MicroOcpp/Debug.h>
 #include <MicroOcpp/Core/Memory.h>
-#include <MicroOcpp/Model/ConnectorBase/EvseId.h>
+#include <MicroOcpp/Model/Common/EvseId.h>
 #include <MicroOcpp/Model/Authorization/IdToken.h>
 
 #include "evse.h"
@@ -67,7 +67,7 @@ int mocpp_api_call(const char *endpoint, MicroOcpp::Method method, const char *b
     MO_DBG_VERBOSE("connectorId = %u", connectorId);
 
     Evse *evse = nullptr;
-    if (connectorId >= 1 && connectorId < MO_NUMCONNECTORS) {
+    if (connectorId >= 1 && connectorId < MO_NUM_EVSEID) {
         evse = &connectors[connectorId-1];
     }
 
@@ -127,7 +127,7 @@ int mocpp_api_call(const char *endpoint, MicroOcpp::Method method, const char *b
             }
         }
         response["idTag"] = evse->getSessionIdTag();
-        response["transactionId"] = evse->getTransactionId();
+        response["transactionId"] = (char*)evse->getTransactionId().c_str(); //force copy
         response["authorizationStatus"] = "";
         status = 200;
     } else if(str_match(endpoint, "/connector/*/smartcharging")){
@@ -270,8 +270,14 @@ int mocpp_api2_call(const char *uri_raw, size_t uri_raw_len, MicroOcpp::Method m
             return 400;
         }
 
+        #if MO_ENABLE_V201
+        #define ID_LEN_MAX MO_IDTOKEN_LEN_MAX
+        #elif MO_ENABLE_V16
+        #define ID_LEN_MAX MO_IDTAG_LEN_MAX
+        #endif
+
         int ret;
-        char id_buf [MO_IDTOKEN_LEN_MAX + 1];
+        char id_buf [ID_LEN_MAX + 1];
         ret = snprintf(id_buf, sizeof(id_buf), "%.*s", (int)id.len, id.buf);
         if (ret < 0 || ret >= sizeof(id_buf)) {
             snprintf(resp_body, resp_body_size, "invalid id");

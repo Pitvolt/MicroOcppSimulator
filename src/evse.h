@@ -7,23 +7,23 @@
 
 #include <array>
 #include <string>
-#include <MicroOcpp/Core/Configuration.h>
-#include <MicroOcpp/Version.h>
 
-#define SIMULATOR_FN MO_FILENAME_PREFIX "simulator.jsn"
+#include <MicroOcpp/Context.h>
+#include <MicroOcpp/Core/FilesystemAdapter.h>
+
+#define SIMULATOR_FN "simulator.jsn"
 
 class Evse {
 private:
     const unsigned int connectorId;
 
-    std::shared_ptr<MicroOcpp::Configuration> trackEvPluggedBool;
-    std::string trackEvPluggedKey;
-    std::shared_ptr<MicroOcpp::Configuration> trackEvsePluggedBool;
-    std::string trackEvsePluggedKey;
-    std::shared_ptr<MicroOcpp::Configuration> trackEvReadyBool;
-    std::string trackEvReadyKey;
-    std::shared_ptr<MicroOcpp::Configuration> trackEvseReadyBool;
-    std::string trackEvseReadyKey;
+    MO_Context *ctx = nullptr;
+    MO_FilesystemAdapter *filesystem = nullptr;
+
+    bool trackEvPlugged = false;
+    bool trackEvsePlugged = false;
+    bool trackEvReady = false;
+    bool trackEvseReady = false;
 
     const float SIMULATE_POWER_CONST = 11000.f;
     float simulate_power = 0;
@@ -36,15 +36,17 @@ private:
 public:
     Evse(unsigned int connectorId);
 
-    void setup();
+    void setup(MO_Context *ctx, MO_FilesystemAdapter *filesystem);
+
+    bool loadLocalState();
+
+    bool storeLocalState();
 
     void loop();
 
     void presentNfcTag(const char *uid);
 
-#if MO_ENABLE_V201
     bool presentNfcTag(const char *uid, const char *type);
-#endif //MO_ENABLE_V201
 
     void setEvPlugged(bool plugged);
 
@@ -63,11 +65,11 @@ public:
     bool getEvseReady();
 
     const char *getSessionIdTag();
-    int getTransactionId();
+    std::string getTransactionId();
     bool chargingPermitted();
 
     bool isCharging() {
-        return chargingPermitted() && trackEvReadyBool->getBool();
+        return chargingPermitted() && trackEvReady;
     }
 
     const char *getOcppStatus() {
@@ -108,6 +110,6 @@ public:
 
 };
 
-extern std::array<Evse, MO_NUMCONNECTORS - 1> connectors;
+extern std::array<Evse, MO_NUM_EVSEID - 1> connectors;
 
 #endif

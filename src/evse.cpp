@@ -4,10 +4,11 @@
 
 #include "evse.h"
 #include <MicroOcpp.h>
-#include <MicroOcpp/Core/Context.h>
+#include <MicroOcpp/Context.h>
+#include <MicroOcpp/Core/FilesystemUtils.h>
 #include <MicroOcpp/Model/Model.h>
-#include <MicroOcpp/Model/Transactions/Transaction.h>
-#include <MicroOcpp/Model/Transactions/TransactionService.h>
+#include <MicroOcpp/Model/Transactions/TransactionService16.h>
+#include <MicroOcpp/Model/Transactions/TransactionService201.h>
 #include <MicroOcpp/Model/Variables/VariableService.h>
 #include <MicroOcpp/Model/Authorization/IdToken.h>
 #include <MicroOcpp/Operations/StatusNotification.h>
@@ -20,125 +21,183 @@ Evse::Evse(unsigned int connectorId) : connectorId{connectorId} {
 
 }
 
-void Evse::setup() {
+void Evse::setup(MO_Context *ctx, MO_FilesystemAdapter *filesystem) {
 
-#if MO_ENABLE_V201
-    if (auto context = getOcppContext()) {
-        if (context->getVersion().major == 2) {
-            //load some example variables for testing
+    this->ctx = ctx;
+    this->filesystem = filesystem;
 
-            if (auto varService = context->getModel().getVariableService()) {
-                varService->declareVariable<bool>("AuthCtrlr", "LocalAuthorizeOffline", false, MicroOcpp::Variable::Mutability::ReadOnly, false);
-            }
-        }
-    }
-#endif
+    loadLocalState();
 
-    char key [30] = {'\0'};
+    storeLocalState(); //populate JSON file if running the first time
 
-    snprintf(key, 30, "evPlugged_cId_%u", connectorId);
-    trackEvPluggedKey = key;
-    trackEvPluggedBool = MicroOcpp::declareConfiguration(trackEvPluggedKey.c_str(), false, SIMULATOR_FN, false, false, false);
-    snprintf(key, 30, "evsePlugged_cId_%u", connectorId);
-    trackEvsePluggedKey = key;
-    trackEvsePluggedBool = MicroOcpp::declareConfiguration(trackEvsePluggedKey.c_str(), false, SIMULATOR_FN, false, false, false);
-    snprintf(key, 30, "evReady_cId_%u", connectorId);
-    trackEvReadyKey = key;
-    trackEvReadyBool = MicroOcpp::declareConfiguration(trackEvReadyKey.c_str(), false, SIMULATOR_FN, false, false, false);
-    snprintf(key, 30, "evseReady_cId_%u", connectorId);
-    trackEvseReadyKey = key;
-    trackEvseReadyBool = MicroOcpp::declareConfiguration(trackEvseReadyKey.c_str(), false, SIMULATOR_FN, false, false, false);
+    mo_setConnectorPluggedInput2(ctx, connectorId, [] (unsigned int, void *userData) -> bool {
+        auto evse = reinterpret_cast<Evse*>(userData);
+        return evse->trackEvPlugged; //return if J1772 is in State B or C
+    }, this);
 
-    MicroOcpp::configuration_load(SIMULATOR_FN);
+    mo_setEvReadyInput2(ctx, connectorId, [] (unsigned int, void *userData) -> bool {
+        auto evse = reinterpret_cast<Evse*>(userData);
+        return evse->trackEvReady; //return if J1772 is in State C
+    }, this);
 
-    setConnectorPluggedInput([this] () -> bool {
-        return trackEvPluggedBool->getBool(); //return if J1772 is in State B or C
-    }, connectorId);
+    mo_setEvseReadyInput2(ctx, connectorId, [] (unsigned int, void *userData) -> bool {
+        auto evse = reinterpret_cast<Evse*>(userData);
+        return evse->trackEvseReady;
+    }, this);
 
-    setEvReadyInput([this] () -> bool {
-        return trackEvReadyBool->getBool(); //return if J1772 is in State C
-    }, connectorId);
+    mo_setEnergyMeterInput2(ctx, connectorId, [] (MO_ReadingContext, unsigned int, void *userData) -> int32_t {
+        auto evse = reinterpret_cast<Evse*>(userData);
+        return evse->simulate_energy;
+    }, this);
 
-    setEvseReadyInput([this] () -> bool {
-        return trackEvseReadyBool->getBool();
-    }, connectorId);
+    mo_setPowerMeterInput2(ctx, connectorId, [] (MO_ReadingContext, unsigned int, void *userData) -> float {
+        auto evse = reinterpret_cast<Evse*>(userData);
+        return evse->simulate_power;
+    }, this);
 
-    addErrorCodeInput([this] () -> const char* {
-        const char *errorCode = nullptr; //if error is present, point to error code; any number of error code samplers can be added in this project
-        return errorCode;
-    }, connectorId);
-
-    setEnergyMeterInput([this] () -> float {
-        return simulate_energy;
-    }, connectorId);
-
-    setPowerMeterInput([this] () -> float {
-        return simulate_power;
-    }, connectorId);
-
-    addMeterValueInput([this] () {
-            return (int32_t) getCurrent();
+    mo_addMeterValueInputFloat2(ctx, connectorId, [] (MO_ReadingContext, unsigned int, void *userData) -> float {
+            auto evse = reinterpret_cast<Evse*>(userData);
+            return evse->getCurrent();
         }, 
         "Current.Import",
         "A",
         "Outlet",
         nullptr,
-        connectorId);
+        this);
     
-    addMeterValueInput([this] () {
-            return (int32_t) getVoltage();
+    mo_addMeterValueInputFloat2(ctx, connectorId, [] (MO_ReadingContext, unsigned int, void *userData) -> float {
+            auto evse = reinterpret_cast<Evse*>(userData);
+            return evse->getVoltage();
         }, 
         "Voltage",
         "V",
         nullptr,
         nullptr,
-        connectorId);
+        this);
     
-    addMeterValueInput([this] () {
-            return (int32_t) (simulate_power > 1.f ? 44.f : 0.f);
+    mo_addMeterValueInputFloat2(ctx, connectorId, [] (MO_ReadingContext, unsigned int, void *userData) -> float {
+            auto evse = reinterpret_cast<Evse*>(userData);
+            return (evse->simulate_power > 1.f ? 44.f : 0.f);
         }, 
         "SoC",
         nullptr,
         nullptr,
         nullptr,
-        connectorId);
+        this);
 
-    setOnResetExecute([] (bool isHard) {
+    mo_setOnResetExecute([] () {
         exit(0);
     });
 
-    setSmartChargingPowerOutput([this] (float limit) {
-        if (limit >= 0.f) {
-            MO_DBG_DEBUG("set limit: %f", limit);
-            this->limit_power = limit;
-        } else {
-            // negative value means no limit defined
-            this->limit_power = SIMULATE_POWER_CONST;
-        }
-    }, connectorId);
+    mo_setSmartChargingOutput(ctx, connectorId, [] (MO_ChargeRate limit, unsigned int, void *userData) {
+            auto evse = reinterpret_cast<Evse*>(userData);
+            if (limit.power >= 0.f) {
+                MO_DBG_DEBUG("set limit: %f", limit.power);
+                evse->limit_power = limit.power;
+            } else {
+                // negative value means no limit defined
+                evse->limit_power = evse->SIMULATE_POWER_CONST;
+            }
+        },
+        true, //powerSupported
+        false, //currentSupported,
+        false, //phases3to1Supported
+        false, //phaseSwitchingSupported
+        this);
+
+}
+
+bool Evse::loadLocalState() {
+    
+    MicroOcpp::JsonDoc doc (0);
+    auto status = MicroOcpp::FilesystemUtils::loadJson(filesystem, SIMULATOR_FN, doc, "Simulator");
+    switch (status) {
+        case MicroOcpp::FilesystemUtils::LoadStatus::Success:
+            break; //continue loading JSON
+        case MicroOcpp::FilesystemUtils::LoadStatus::FileNotFound:
+            break; //file does not exist yet - use default values
+        case MicroOcpp::FilesystemUtils::LoadStatus::ErrOOM:
+        case MicroOcpp::FilesystemUtils::LoadStatus::ErrFileCorruption:
+        case MicroOcpp::FilesystemUtils::LoadStatus::ErrOther:
+            MO_DBG_ERR("failed to load %s", SIMULATOR_FN);
+            break; //error - use default values
+    }
+
+    JsonObject state = doc["evse"][connectorId-1];
+
+    trackEvPlugged = state["evPlugged"] | false;
+    trackEvsePlugged = state["evsePlugged"] | false;
+    trackEvReady = state["evReady"] | false;
+    trackEvseReady = state["evseReady"] | false;
+
+    return true;
+}
+
+bool Evse::storeLocalState() {
+    
+    MicroOcpp::JsonDoc doc (0);
+    auto status = MicroOcpp::FilesystemUtils::loadJson(filesystem, SIMULATOR_FN, doc, "Simulator");
+    switch (status) {
+        case MicroOcpp::FilesystemUtils::LoadStatus::Success:
+            break; //continue writing JSON
+        case MicroOcpp::FilesystemUtils::LoadStatus::FileNotFound:
+            break; //file does not exist yet - create file
+        case MicroOcpp::FilesystemUtils::LoadStatus::ErrOOM:
+        case MicroOcpp::FilesystemUtils::LoadStatus::ErrFileCorruption:
+        case MicroOcpp::FilesystemUtils::LoadStatus::ErrOther:
+            MO_DBG_ERR("failed to load %s", SIMULATOR_FN);
+            break; //error - create new file
+    }
+
+    MicroOcpp::JsonDoc doc2 = MicroOcpp::initJsonDoc("Simulator", doc.as<JsonObject>().memoryUsage() +  256);
+    doc2 = doc.as<JsonObject>();
+    doc.clear();
+
+    JsonArray evseJson = doc2["evse"];
+    if (evseJson.isNull()) {
+        evseJson = doc2.createNestedArray("evse");
+    }
+    while (evseJson.size() < connectorId) {
+        evseJson.createNestedObject();
+    }
+
+    JsonObject state = doc2["evse"][connectorId-1];
+
+    state["evPlugged"] = trackEvPlugged;
+    state["evsePlugged"] = trackEvsePlugged;
+    state["evReady"] = trackEvReady;
+    state["evseReady"] = trackEvseReady;
+
+    auto status2 = MicroOcpp::FilesystemUtils::storeJson(filesystem, SIMULATOR_FN, doc2);
+    if (status2 != MicroOcpp::FilesystemUtils::StoreStatus::Success) {
+        MO_DBG_ERR("store error: %s", SIMULATOR_FN);
+        return false;
+    }
+
+    return true;
 }
 
 void Evse::loop() {
 
-    auto curStatus = getChargePointStatus(connectorId);
+    auto curStatus = mo_getChargePointStatus2(ctx, connectorId);
 
-    if (status.compare(MicroOcpp::cstrFromOcppEveState(curStatus))) {
-        status = MicroOcpp::cstrFromOcppEveState(curStatus);
+    if (status.compare(mo_serializeChargePointStatus(curStatus))) {
+        status = mo_serializeChargePointStatus(curStatus);
     }
 
-    bool simulate_isCharging = ocppPermitsCharge(connectorId) && trackEvPluggedBool->getBool() && trackEvsePluggedBool->getBool() && trackEvReadyBool->getBool() && trackEvseReadyBool->getBool();
+    bool simulate_isCharging = mo_ocppPermitsCharge2(ctx, connectorId) && trackEvPlugged && trackEvsePlugged && trackEvReady && trackEvseReady;
 
     simulate_isCharging &= limit_power >= 720.f; //minimum charging current is 6A (720W for 120V grids) according to J1772
 
     if (simulate_isCharging) {
         if (simulate_power >= 1.f) {
-            simulate_energy += (float) (mocpp_tick_ms() - simulate_energy_track_time) * simulate_power * (0.001f / 3600.f);
+            simulate_energy += (float) (mo_getUptime2(ctx) - simulate_energy_track_time) * simulate_power / 3600.f;
         }
 
         simulate_power = SIMULATE_POWER_CONST;
         simulate_power = std::min(simulate_power, limit_power);
-        simulate_power += (((mocpp_tick_ms() / 5000) * 3483947) % 20000) * 0.001f - 10.f;
-        simulate_energy_track_time = mocpp_tick_ms();
+        simulate_power += (((mo_getUptime2(ctx) / 5) * 3483947) % 20000) * 0.001f - 10.f;
+        simulate_energy_track_time = mo_getUptime2(ctx);
     } else {
         simulate_power = 0.f;
     }
@@ -151,102 +210,105 @@ void Evse::presentNfcTag(const char *uid) {
         return;
     }
 
-#if MO_ENABLE_V201
-    if (auto context = getOcppContext()) {
-        if (context->getVersion().major == 2) {
-            presentNfcTag(uid, "ISO14443");
-            return;
-        }
-    }
-#endif
-
-    if (isTransactionActive(connectorId)) {
-        if (!strcmp(uid, getTransactionIdTag(connectorId))) {
-            endTransaction(uid, "Local", connectorId);
+    if (mo_isTransactionActive2(ctx, connectorId)) {
+        if (!strcmp(uid, mo_getTransactionIdTag2(ctx, connectorId))) {
+            mo_endTransaction2(ctx, connectorId, uid, "Local");
         } else {
             MO_DBG_INFO("RFID card denied");
         }
     } else {
-        beginTransaction(uid, connectorId);
+        mo_beginTransaction2(ctx, connectorId, uid);
     }
 }
 
-#if MO_ENABLE_V201
 bool Evse::presentNfcTag(const char *uid, const char *type) {
 
-    MicroOcpp::IdToken idToken {nullptr, MicroOcpp::IdToken::Type::UNDEFINED, "Simulator"};
-    if (!idToken.parseCstr(uid, type)) {
-        return false;
+    bool res = false;
+    
+    #if MO_ENABLE_V16
+    if (mo_getOcppVersion2(ctx) == MO_OCPP_V16) {
+        presentNfcTag(uid);
+        res = true;
     }
-
-    if (auto txService = getOcppContext()->getModel().getTransactionService()) {
-        if (auto evse = txService->getEvse(connectorId)) {
-            if (evse->getTransaction() && evse->getTransaction()->isAuthorizationActive) {
-                evse->endAuthorization(idToken);
-            } else {
-                evse->beginAuthorization(idToken);
-            }
-            return true;
+    #endif //MO_ENABLE_V16
+    #if MO_ENABLE_V201
+    if (mo_getOcppVersion2(ctx) == MO_OCPP_V201) {
+        MicroOcpp::Ocpp201::IdToken idToken;
+        if (!idToken.parseCstr(uid, type)) {
+            MO_DBG_ERR("could not parse idToken (%s, %s)", uid, type);
+            return false;
         }
+        res = mo_authorizeTransaction2(ctx, connectorId, idToken.get(), idToken.getType());
     }
-    return false;
+    #endif //MO_ENABLE_V201
+
+    return res;
 }
-#endif
 
 void Evse::setEvPlugged(bool plugged) {
-    if (!trackEvPluggedBool) return;
-    trackEvPluggedBool->setBool(plugged);
-    MicroOcpp::configuration_save();
+    trackEvPlugged = plugged;
+    storeLocalState();
 }
 
 bool Evse::getEvPlugged() {
-    if (!trackEvPluggedBool) return false;
-    return trackEvPluggedBool->getBool();
+    return trackEvPlugged;
 }
 
 void Evse::setEvsePlugged(bool plugged) {
-    if (!trackEvsePluggedBool) return;
-    trackEvsePluggedBool->setBool(plugged);
-    MicroOcpp::configuration_save();
+    trackEvsePlugged = plugged;
+    storeLocalState();
 }
 
 bool Evse::getEvsePlugged() {
-    if (!trackEvsePluggedBool) return false;
-    return trackEvsePluggedBool->getBool();
+    return trackEvsePlugged;
 }
 
 void Evse::setEvReady(bool ready) {
-    if (!trackEvReadyBool) return;
-    trackEvReadyBool->setBool(ready);
-    MicroOcpp::configuration_save();
+    trackEvReady = ready;
+    storeLocalState();
 }
 
 bool Evse::getEvReady() {
-    if (!trackEvReadyBool) return false;
-    return trackEvReadyBool->getBool();
+    return trackEvReady;
 }
 
 void Evse::setEvseReady(bool ready) {
-    if (!trackEvseReadyBool) return;
-    trackEvseReadyBool->setBool(ready);
-    MicroOcpp::configuration_save();
+    trackEvseReady = ready;
+    storeLocalState();
 }
 
 bool Evse::getEvseReady() {
-    if (!trackEvseReadyBool) return false;
-    return trackEvseReadyBool->getBool();
+    return trackEvseReady;
 }
 
 const char *Evse::getSessionIdTag() {
-    return getTransactionIdTag(connectorId) ? getTransactionIdTag(connectorId) : "";
+    return mo_getTransactionIdTag2(ctx, connectorId) ? mo_getTransactionIdTag2(ctx, connectorId) : "";
 }
 
-int Evse::getTransactionId() {
-    return getTransaction(connectorId) ? getTransaction(connectorId)->getTransactionId() : -1;
+std::string Evse::getTransactionId() {
+
+    std::string res;
+
+    #if MO_ENABLE_V16
+    if (mo_getOcppVersion2(ctx) == MO_OCPP_V16) {
+        if (mo_v16_getTransactionId2(ctx, connectorId) > 0) {
+            char buf [30];
+            snprintf(buf, sizeof(buf), "%i", mo_v16_getTransactionId2(ctx, connectorId));
+            res = buf;
+        }
+    }
+    #endif //MO_ENABLE_V16
+    #if MO_ENABLE_V201
+    if (mo_getOcppVersion2(ctx) == MO_OCPP_V201) {
+        res = mo_v201_getTransactionId2(ctx, connectorId) ? mo_v201_getTransactionId2(ctx, connectorId) : "";
+    }
+    #endif //MO_ENABLE_V201
+
+    return res;
 }
 
 bool Evse::chargingPermitted() {
-    return ocppPermitsCharge(connectorId);
+    return mo_ocppPermitsCharge2(ctx, connectorId);
 }
 
 int Evse::getPower() {
@@ -255,7 +317,7 @@ int Evse::getPower() {
 
 float Evse::getVoltage() {
     if (getPower() > 1.f) {
-        return 228.f + (((mocpp_tick_ms() / 5000) * 7484311) % 4000) * 0.001f;
+        return 228.f + (((mo_getUptime2(ctx) / 5) * 7484311) % 4000) * 0.001f;
     } else {
         return 0.f;
     }

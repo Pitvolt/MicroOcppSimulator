@@ -8,12 +8,9 @@
 #if MO_NETLIB == MO_NETLIB_MONGOOSE
 
 #include "mongoose.h"
+#include <MicroOcppMongooseClient.h>
 
-namespace MicroOcpp {
-class MOcppMongooseClient;
-}
-
-void server_initialize(MicroOcpp::MOcppMongooseClient *osock, const char *cert = "", const char *key = "", const char *user = "", const char *pass = "");
+void server_initialize(MO_MG_Connection *osock, const char *cert = "", const char *key = "", const char *user = "", const char *pass = "");
 
 void http_serve(struct mg_connection *c, int ev, void *ev_data);
 

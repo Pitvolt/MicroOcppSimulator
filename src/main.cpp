@@ -8,24 +8,23 @@
 #include <mbedtls/platform.h>
 
 #include <MicroOcpp.h>
-#include <MicroOcpp/Core/Context.h>
+#include <MicroOcpp/Context.h>
 #include <MicroOcpp/Core/FilesystemUtils.h>
 #include "evse.h"
 #include "api.h"
 
 #include <MicroOcpp/Core/Memory.h>
 
-#if MO_NUMCONNECTORS == 3
-std::array<Evse, MO_NUMCONNECTORS - 1> connectors {{1,2}};
+#if MO_NUM_EVSEID == 3
+std::array<Evse, MO_NUM_EVSEID - 1> connectors {{1,2}};
 #else
-std::array<Evse, MO_NUMCONNECTORS - 1> connectors {{1}};
+std::array<Evse, MO_NUM_EVSEID - 1> connectors {{1}};
 #endif
 
-bool g_isOcpp201 = false;
 bool g_runSimulator = true;
 
 bool g_isUpAndRunning = false; //if the initial BootNotification and StatusNotifications got through + 1s delay
-unsigned int g_bootNotificationTime = 0;
+int32_t g_bootNotificationTime = -1;
 
 #define MO_NETLIB_MONGOOSE 1
 #define MO_NETLIB_WASM 2
@@ -38,7 +37,7 @@ unsigned int g_bootNotificationTime = 0;
 #include "net_mongoose.h"
 
 struct mg_mgr mgr;
-MicroOcpp::MOcppMongooseClient *osock;
+MO_MG_Connection *g_wsClient;
 
 #elif MO_NETLIB == MO_NETLIB_WASM
 #include <emscripten.h>
@@ -81,50 +80,43 @@ void mo_sim_sig_handler(int s){
 /*
  * Setup MicroOcpp and API
  */
-void load_ocpp_version(std::shared_ptr<MicroOcpp::FilesystemAdapter> filesystem) {
+int load_ocpp_version(MO_FilesystemAdapter *filesystem) {
 
-    MicroOcpp::configuration_init(filesystem);
-
-    #if MO_ENABLE_V201
-    {
-        auto protocolVersion_stored = MicroOcpp::declareConfiguration<const char*>("OcppVersion", "1.6", SIMULATOR_FN, false, false, false);
-        MicroOcpp::configuration_load(SIMULATOR_FN);
-        if (!strcmp(protocolVersion_stored->getString(), "2.0.1")) {
-            //select OCPP 2.0.1
-            g_isOcpp201 = true;
-            return;
-        }
+    MicroOcpp::JsonDoc doc (0);
+    auto status = MicroOcpp::FilesystemUtils::loadJson(filesystem, SIMULATOR_FN, doc, "Simulator");
+    switch (status) {
+        case MicroOcpp::FilesystemUtils::LoadStatus::Success:
+            break; //continue loading JSON
+        case MicroOcpp::FilesystemUtils::LoadStatus::FileNotFound:
+            break; //file does not exist yet - create file and use default value
+        case MicroOcpp::FilesystemUtils::LoadStatus::ErrOOM:
+        case MicroOcpp::FilesystemUtils::LoadStatus::ErrFileCorruption:
+        case MicroOcpp::FilesystemUtils::LoadStatus::ErrOther:
+            printf("[Sim] failed to load %s\n", SIMULATOR_FN);
+            break; //error - create new file and use default value
     }
-    #endif //MO_ENABLE_V201
 
-    g_isOcpp201 = false;
-}
+    int ocppVersion = -1;
 
-void app_setup(MicroOcpp::Connection& connection, std::shared_ptr<MicroOcpp::FilesystemAdapter> filesystem) {
-    mocpp_initialize(connection,
-            g_isOcpp201 ?
-                ChargerCredentials::v201("MicroOcpp Simulator", "MicroOcpp") :
-                ChargerCredentials("MicroOcpp Simulator", "MicroOcpp"),
-            filesystem,
-            false,
-            g_isOcpp201 ?
-                MicroOcpp::ProtocolVersion{2,0,1} :
-                MicroOcpp::ProtocolVersion{1,6}
-            );
-
-    for (unsigned int i = 0; i < connectors.size(); i++) {
-        connectors[i].setup();
+    const char *ocppVersionStr = doc["ocppVersion"] | "_Undefined";
+    if (!strcmp(ocppVersionStr, "ocpp1.6") && MO_ENABLE_V16) {
+        ocppVersion = MO_OCPP_V16;
+    } else if (!strcmp(ocppVersionStr, "ocpp2.0.1") && MO_ENABLE_V201) {
+        ocppVersion = MO_OCPP_V201;
+    } else {
+        ocppVersion = MO_ENABLE_V16 ? MO_OCPP_V16 : MO_OCPP_V201;
     }
-}
 
-/*
- * Execute one loop iteration
- */
-void app_loop() {
-    mocpp_loop();
-    for (unsigned int i = 0; i < connectors.size(); i++) {
-        connectors[i].loop();
+    //write back doc to initialize ocppVersion field
+    MicroOcpp::JsonDoc doc2 = MicroOcpp::initJsonDoc("Simulator", doc.as<JsonObject>().memoryUsage() + 256);
+    doc2 = doc.as<JsonObject>();
+    doc2["ocppVersion"] = ocppVersion == MO_OCPP_V16 ? "ocpp1.6" : "ocpp2.0.1";
+    auto status2 = MicroOcpp::FilesystemUtils::storeJson(filesystem, SIMULATOR_FN, doc2);
+    if (status2 != MicroOcpp::FilesystemUtils::StoreStatus::Success) {
+        printf("[Sim] store error: %s\n", SIMULATOR_FN);
     }
+
+    return ocppVersion;
 }
 
 #if MO_NETLIB == MO_NETLIB_MONGOOSE
@@ -134,6 +126,8 @@ void app_loop() {
 #endif
 
 int main() {
+
+    setbuf(stdout, NULL); //disable buffered printing
 
 #if MBEDTLS_PLATFORM_MEMORY
     mbedtls_platform_set_calloc_free(mo_mem_mbedtls_calloc, mo_mem_mbedtls_free);
@@ -148,51 +142,100 @@ int main() {
     mg_log_set(MG_LL_INFO);                            
     mg_mgr_init(&mgr);
 
-    auto filesystem = MicroOcpp::makeDefaultFilesystemAdapter(MicroOcpp::FilesystemOpt::Use_Mount_FormatOnFail);
+    //Begin MO lifecycle
+    mo_initialize();
 
-    load_ocpp_version(filesystem);
+    //Set filesystem config. After that, it is possible to use the internal MO file abstraction layer
+    mo_setDefaultFilesystemConfig(MO_FS_OPT_USE_MOUNT);
+    auto filesystem = mo_getFilesystem();
+
+    /*
+     * Setup Simulator web API: listen to HTTP requests which tell the Simulator into which state to go
+     */
 
     struct mg_str api_cert = mg_file_read(&mg_fs_posix, MO_FILENAME_PREFIX "api_cert.pem");
     struct mg_str api_key = mg_file_read(&mg_fs_posix, MO_FILENAME_PREFIX "api_key.pem");
 
-    auto api_settings_doc = MicroOcpp::FilesystemUtils::loadJson(filesystem, MO_FILENAME_PREFIX "api.jsn", "Simulator");
-    if (!api_settings_doc) {
-        api_settings_doc = MicroOcpp::makeJsonDoc("Simulator", 0);
+    MicroOcpp::JsonDoc api_settings_doc (0);
+    auto status = MicroOcpp::FilesystemUtils::loadJson(filesystem, "api.jsn", api_settings_doc, "Simulator");
+    switch (status) {
+        case MicroOcpp::FilesystemUtils::LoadStatus::Success:
+            break; //continue loading JSON
+        case MicroOcpp::FilesystemUtils::LoadStatus::FileNotFound:
+            break; //file does not exist yet - create file
+        case MicroOcpp::FilesystemUtils::LoadStatus::ErrOOM:
+        case MicroOcpp::FilesystemUtils::LoadStatus::ErrFileCorruption:
+        case MicroOcpp::FilesystemUtils::LoadStatus::ErrOther:
+            printf("[Sim] failed to load %s\n", SIMULATOR_FN);
+            break; //error - create new file
     }
-    JsonObject api_settings = api_settings_doc->as<JsonObject>();
+
+    JsonObject api_settings = api_settings_doc.as<JsonObject>();
 
     const char *api_url = api_settings["url"] | MO_SIM_ENDPOINT_URL;
 
-    mg_http_listen(&mgr, api_url, http_serve, (void*)api_url);     // Create listening connection
+    mg_http_listen(&mgr, api_url, http_serve, (void*)api_url); // Create listening connection
 
-    osock = new MicroOcpp::MOcppMongooseClient(&mgr,
+    /*
+     * Setup MO
+     */
+
+    //Load OCPP version from config file (not part of MO) and setup MO with it
+    int ocppVersion = load_ocpp_version(filesystem);
+    mo_setOcppVersion(ocppVersion);
+
+    g_wsClient = mo_createMongooseWsClient(
+        mo_getApiContext(),
+        filesystem,
+        &mgr,
         "ws://echo.websocket.events",
         "charger-01",
         "",
-        "",
-        filesystem,
-        g_isOcpp201 ?
-            MicroOcpp::ProtocolVersion{2,0,1} :
-            MicroOcpp::ProtocolVersion{1,6}
-        );
+        "");
 
-    server_initialize(osock, api_cert.buf ? api_cert.buf : "", api_key.buf ? api_key.buf : "", api_settings["user"] | "", api_settings["pass"] | "");
-    app_setup(*osock, filesystem);
+    server_initialize(g_wsClient, api_cert.buf ? api_cert.buf : "", api_key.buf ? api_key.buf : "", api_settings["user"] | "", api_settings["pass"] | "");
 
-    setOnResetExecute([] (bool isHard) {
+    //write file back (creates file if running for the first time)
+    MicroOcpp::JsonDoc api_settings_doc2 = MicroOcpp::initJsonDoc("Simulator", api_settings_doc.as<JsonObject>().memoryUsage() + 256);
+    api_settings_doc2 = api_settings_doc.as<JsonObject>();
+    JsonObject api_settings2 = api_settings_doc2.to<JsonObject>();
+    api_settings2["url"] = api_url;
+    api_settings2["user"] = api_settings["user"] | "";
+    api_settings2["pass"] = api_settings["pass"] | "";
+    auto status2 = MicroOcpp::FilesystemUtils::storeJson(filesystem, "api.jsn", api_settings_doc2);
+    if (status2 != MicroOcpp::FilesystemUtils::StoreStatus::Success) {
+        printf("[Sim] store error: %s\n", SIMULATOR_FN);
+    }
+
+    //set data to send in BootNotification
+    mo_setBootNotificationData("MicroOcpp Simulator", "MicroOcpp");
+
+    //Simulator sets up further MO config
+    for (unsigned int i = 0; i < connectors.size(); i++) {
+        connectors[i].setup(mo_getApiContext(), filesystem);
+    }
+
+    mo_setOnResetExecute([] () {
         g_runSimulator = false;
     });
 
+    //Finalize MO setup. Now, the configuration of MO cannot be changed anymore
+    mo_setup();
+
     while (g_runSimulator) { //Run Simulator until OCPP Reset is executed or user presses Ctrl+C
         mg_mgr_poll(&mgr, 100);
-        app_loop();
+        mo_loop();
 
-        if (!g_bootNotificationTime && getOcppContext()->getModel().getClock().now() >= MicroOcpp::MIN_TIME) {
-            //time has been set, BootNotification succeeded
-            g_bootNotificationTime = mocpp_tick_ms();
+        for (unsigned int i = 0; i < connectors.size(); i++) {
+            connectors[i].loop();
         }
 
-        if (!g_isUpAndRunning && g_bootNotificationTime && mocpp_tick_ms() - g_bootNotificationTime >= 1000) {
+        if (!g_bootNotificationTime < 0 && mo_getContext()->getClock().getUptime().isUnixTime()) {
+            //time has been set, BootNotification succeeded
+            g_bootNotificationTime = mo_getContext()->getClock().getUptimeInt();
+        }
+
+        if (!g_isUpAndRunning && g_bootNotificationTime >= 0 && mo_getContext()->getClock().getUptimeInt() - g_bootNotificationTime >= 1) {
             printf("[Sim] Resetting maximum heap usage after boot success\n");
             g_isUpAndRunning = true;
             MO_MEM_RESET();
@@ -203,9 +246,9 @@ int main() {
 
     MO_MEM_PRINT_STATS();
 
-    mocpp_deinitialize();
+    mo_deinitialize();
+    mo_freeMongooseWsClient(g_wsClient);
 
-    delete osock;
     mg_mgr_free(&mgr);
     free(api_cert.buf);
     free(api_key.buf);
