@@ -16,15 +16,18 @@
 #include <MicroOcpp/Core/Memory.h>
 
 #if MO_NUM_EVSEID == 3
-std::array<Evse, MO_NUM_EVSEID - 1> connectors {{1,2}};
+std::array<Evse, MO_NUM_EVSEID> connectors {{0, 1, 2}};
 #else
-std::array<Evse, MO_NUM_EVSEID - 1> connectors {{1}};
+std::array<Evse, MO_NUM_EVSEID> connectors {{0, 1}};
 #endif
 
 bool g_runSimulator = true;
 
 bool g_isUpAndRunning = false; //if the initial BootNotification and StatusNotifications got through + 1s delay
 int32_t g_bootNotificationTime = -1;
+
+bool g_scheduleReboot;
+int32_t g_scheduleRebootTimer;
 
 #define MO_NETLIB_MONGOOSE 1
 #define MO_NETLIB_WASM 2
@@ -83,8 +86,8 @@ void mo_sim_sig_handler(int s){
 int load_ocpp_version(MO_FilesystemAdapter *filesystem) {
 
     MicroOcpp::JsonDoc doc (0);
-    auto status = MicroOcpp::FilesystemUtils::loadJson(filesystem, SIMULATOR_FN, doc, "Simulator");
-    switch (status) {
+    auto loadStatus = MicroOcpp::FilesystemUtils::loadJson(filesystem, SIMULATOR_FN, doc, "Simulator");
+    switch (loadStatus) {
         case MicroOcpp::FilesystemUtils::LoadStatus::Success:
             break; //continue loading JSON
         case MicroOcpp::FilesystemUtils::LoadStatus::FileNotFound:
@@ -111,8 +114,8 @@ int load_ocpp_version(MO_FilesystemAdapter *filesystem) {
     MicroOcpp::JsonDoc doc2 = MicroOcpp::initJsonDoc("Simulator", doc.as<JsonObject>().memoryUsage() + 256);
     doc2 = doc.as<JsonObject>();
     doc2["ocppVersion"] = ocppVersion == MO_OCPP_V16 ? "ocpp1.6" : "ocpp2.0.1";
-    auto status2 = MicroOcpp::FilesystemUtils::storeJson(filesystem, SIMULATOR_FN, doc2);
-    if (status2 != MicroOcpp::FilesystemUtils::StoreStatus::Success) {
+    auto storeStatus = MicroOcpp::FilesystemUtils::storeJson(filesystem, SIMULATOR_FN, doc2);
+    if (storeStatus != MicroOcpp::FilesystemUtils::StoreStatus::Success) {
         printf("[Sim] store error: %s\n", SIMULATOR_FN);
     }
 
@@ -146,7 +149,7 @@ int main() {
     mo_initialize();
 
     //Set filesystem config. After that, it is possible to use the internal MO file abstraction layer
-    mo_setDefaultFilesystemConfig(MO_FS_OPT_USE_MOUNT);
+    mo_setFilesystemConfig(MO_FS_OPT_USE_MOUNT);
     auto filesystem = mo_getFilesystem();
 
     /*
@@ -157,8 +160,8 @@ int main() {
     struct mg_str api_key = mg_file_read(&mg_fs_posix, MO_FILENAME_PREFIX "api_key.pem");
 
     MicroOcpp::JsonDoc api_settings_doc (0);
-    auto status = MicroOcpp::FilesystemUtils::loadJson(filesystem, "api.jsn", api_settings_doc, "Simulator");
-    switch (status) {
+    auto loadStatus = MicroOcpp::FilesystemUtils::loadJson(filesystem, "api.jsn", api_settings_doc, "Simulator");
+    switch (loadStatus) {
         case MicroOcpp::FilesystemUtils::LoadStatus::Success:
             break; //continue loading JSON
         case MicroOcpp::FilesystemUtils::LoadStatus::FileNotFound:
@@ -175,6 +178,44 @@ int main() {
     const char *api_url = api_settings["url"] | MO_SIM_ENDPOINT_URL;
 
     mg_http_listen(&mgr, api_url, http_serve, (void*)api_url); // Create listening connection
+
+    /*
+     * Setup Simulator remote control interface: connect to test driver server and execute PRCs from test driver
+     */
+    
+    struct mg_str rmt_ctrl_ca = mg_file_read(&mg_fs_posix, MO_FILENAME_PREFIX "rmt_ctrl.pem");
+
+    MicroOcpp::JsonDoc rmt_ctrl_settings_doc (0);
+    loadStatus = MicroOcpp::FilesystemUtils::loadJson(filesystem, "rmt_ctrl.jsn", rmt_ctrl_settings_doc, "Simulator");
+    switch (loadStatus) {
+        case MicroOcpp::FilesystemUtils::LoadStatus::Success:
+            break; //continue loading JSON
+        case MicroOcpp::FilesystemUtils::LoadStatus::FileNotFound:
+            break; //file does not exist yet - create file
+        case MicroOcpp::FilesystemUtils::LoadStatus::ErrOOM:
+        case MicroOcpp::FilesystemUtils::LoadStatus::ErrFileCorruption:
+        case MicroOcpp::FilesystemUtils::LoadStatus::ErrOther:
+            printf("[Sim] failed to load %s\n", SIMULATOR_FN);
+            break; //error - create new file
+    }
+
+    JsonObject rmt_ctrl_settings = rmt_ctrl_settings_doc.as<JsonObject>();
+
+    const char *rmt_ctrl_url = rmt_ctrl_settings["url"] | "";
+    const char *rmt_ctrl_api_token = rmt_ctrl_settings["api_token"] | "";
+
+    rmt_ctrl_initialize(&mgr, rmt_ctrl_url, rmt_ctrl_api_token, rmt_ctrl_ca.buf);
+
+    //write file back (creates file if running for the first time)
+    MicroOcpp::JsonDoc rmt_ctrl_settings_doc2 = MicroOcpp::initJsonDoc("Simulator", rmt_ctrl_settings_doc.as<JsonObject>().memoryUsage() + 256);
+    rmt_ctrl_settings_doc2 = rmt_ctrl_settings_doc.as<JsonObject>();
+    JsonObject rmt_ctrl_settings2 = rmt_ctrl_settings_doc2.to<JsonObject>();
+    rmt_ctrl_settings2["url"] = rmt_ctrl_url;
+    rmt_ctrl_settings2["api_token"] = rmt_ctrl_api_token;
+    auto storeStatus = MicroOcpp::FilesystemUtils::storeJson(filesystem, "rmt_ctrl.jsn", rmt_ctrl_settings_doc2);
+    if (storeStatus != MicroOcpp::FilesystemUtils::StoreStatus::Success) {
+        printf("[Sim] store error: %s\n", SIMULATOR_FN);
+    }
 
     /*
      * Setup MO
@@ -202,8 +243,8 @@ int main() {
     api_settings2["url"] = api_url;
     api_settings2["user"] = api_settings["user"] | "";
     api_settings2["pass"] = api_settings["pass"] | "";
-    auto status2 = MicroOcpp::FilesystemUtils::storeJson(filesystem, "api.jsn", api_settings_doc2);
-    if (status2 != MicroOcpp::FilesystemUtils::StoreStatus::Success) {
+    storeStatus = MicroOcpp::FilesystemUtils::storeJson(filesystem, "api.jsn", api_settings_doc2);
+    if (storeStatus != MicroOcpp::FilesystemUtils::StoreStatus::Success) {
         printf("[Sim] store error: %s\n", SIMULATOR_FN);
     }
 
@@ -219,11 +260,17 @@ int main() {
         g_runSimulator = false;
     });
 
+    mocpp_api_set_reboot_cb([] () {
+        g_scheduleReboot = true;
+        g_scheduleRebootTimer = mo_getUptime() + 5;
+    });
+
     //Finalize MO setup. Now, the configuration of MO cannot be changed anymore
     mo_setup();
 
     while (g_runSimulator) { //Run Simulator until OCPP Reset is executed or user presses Ctrl+C
         mg_mgr_poll(&mgr, 100);
+        rmt_ctrl_loop();
         mo_loop();
 
         for (unsigned int i = 0; i < connectors.size(); i++) {
@@ -246,10 +293,13 @@ int main() {
 
     MO_MEM_PRINT_STATS();
 
+    rmt_ctrl_deinitialize();
+
     mo_deinitialize();
     mo_freeMongooseWsClient(g_wsClient);
 
     mg_mgr_free(&mgr);
+    free(rmt_ctrl_ca.buf);
     free(api_cert.buf);
     free(api_key.buf);
     return 0;

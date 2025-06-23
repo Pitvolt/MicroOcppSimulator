@@ -25,9 +25,12 @@ private:
     bool trackEvReady = false;
     bool trackEvseReady = false;
 
+    std::string errorCode;
+
     const float SIMULATE_POWER_CONST = 11000.f;
     float simulate_power = 0;
-    float limit_power = 11000.f;
+    float limit_power_ocpp = -1.f;
+    float limit_power_api = -1.f;
     const float SIMULATE_ENERGY_DELTA_MS = SIMULATE_POWER_CONST / (3600.f * 1000.f);
     unsigned long simulate_energy_track_time = 0;
     float simulate_energy = 0;
@@ -64,6 +67,10 @@ public:
 
     bool getEvseReady();
 
+    void setErrorCode(const char *errorCode);
+
+    const char *getErrorCode();
+
     const char *getSessionIdTag();
     std::string getTransactionId();
     bool chargingPermitted();
@@ -97,7 +104,7 @@ public:
     }
 
     int getSmartChargingMaxPower() {
-        return limit_power;
+        return limit_power_ocpp >= 0.f ? limit_power_ocpp : SIMULATE_POWER_CONST;
     }
 
     float getSmartChargingMaxCurrent() {
@@ -108,8 +115,10 @@ public:
         return 0.333f * (float) getSmartChargingMaxPower() / volts;
     }
 
+    void setPowerLimit(float limit_api);
+
 };
 
-extern std::array<Evse, MO_NUM_EVSEID - 1> connectors;
+extern std::array<Evse, MO_NUM_EVSEID> connectors;
 
 #endif

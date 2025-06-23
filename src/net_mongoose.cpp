@@ -160,3 +160,140 @@ void http_serve(struct mg_connection *c, int ev, void *ev_data) {
         }
     }
 }
+
+struct mg_mgr *rmt_ctrl_mgr;
+std::string rmt_ctrl_url;
+std::string rmt_ctrl_auth_token;
+std::string rmt_ctrl_ca;
+
+struct mg_connection *rmt_ctrl_conn;
+int32_t rmt_ctrl_reconnect_timer;
+
+void rmt_ctrl_process_msg(const char *msg, size_t msg_len) {
+    DynamicJsonDocument doc (1024);
+
+    auto err = deserializeJson(doc, msg, msg_len);
+    if (err) {
+        MO_DBG_WARN("JSON deserialization error: %s", err.c_str());
+        return;
+    }
+
+    const char *time = doc["time"] | "_Invalid";
+    const char *id = doc["id"] | "_Invalid";
+    const char *operation = doc["operation"] | "_Invalid";
+
+    MO_DBG_INFO("Rmt Ctrl %s (%s)", operation, time);
+
+    std::vector<const char*> params_key, params_val;
+
+    JsonArray params_json = doc["params"];
+    for (size_t i = 0; i < params_json.size(); i++) {
+        JsonObject key_value = params_json[i];
+        const char *key = key_value["key"] | (const char*)nullptr;
+        const char *value = key_value["value"] | (const char*)nullptr;
+        if (!key || !value) {
+            MO_DBG_ERR("url encoder err");
+            continue;
+        }
+
+        params_key.push_back(key);
+        params_val.push_back(value);
+    }
+    
+    const char *type = doc["type"] | "_Invalid";
+
+    bool success = mocpp_api3_call(type, operation, &params_key[0], &params_val[0], params_key.size());
+
+    if (!success) {
+        MO_DBG_ERR("API call failed");
+    }
+
+    //Send response (this function is only called when connection is esablished, so can send response directly)
+
+    DynamicJsonDocument doc_response (256);
+    doc_response["id"] = id;
+    doc_response["status"] = success ? "Ok" : "Nok";
+
+    char response [256];
+    auto serialize_ret = serializeJson(doc_response, response, sizeof(response));
+    if (serialize_ret < 2 || serialize_ret >= sizeof(response)) {
+        MO_DBG_ERR("JSON serialization error");
+        return;
+    }
+
+    mg_ws_send(rmt_ctrl_conn, response, serialize_ret, WEBSOCKET_OP_TEXT);
+}
+
+void rmt_ctrl_mongoose_cb(struct mg_connection *c, int ev, void *ev_data) {
+
+    if (ev == MG_EV_CONNECT) {
+        // If target URL is SSL/TLS, command client connection to use TLS
+        if (mg_url_is_ssl(rmt_ctrl_url.c_str())) {
+            const char *ca_string = rmt_ctrl_ca.c_str();
+            if (ca_string && *ca_string == '\0') { //check if certificate verification is disabled (cert string is empty)
+                //yes, disabled
+                ca_string = nullptr;
+            }
+            struct mg_tls_opts opts;
+            memset(&opts, 0, sizeof(struct mg_tls_opts));
+            opts.ca = mg_str(ca_string);
+            opts.name = mg_url_host(rmt_ctrl_url.c_str());
+            mg_tls_init(c, &opts);
+        } else {
+            MO_DBG_WARN("Insecure connection (WS)");
+        }
+    } else if (ev == MG_EV_WS_OPEN) {
+        MO_DBG_INFO("Rmt Ctrl connection %s -- connected!", rmt_ctrl_url.c_str());
+    } else if (ev == MG_EV_WS_MSG) {
+        struct mg_ws_message *wm = (struct mg_ws_message *) ev_data;
+        rmt_ctrl_process_msg((const char*) wm->data.buf, wm->data.len);
+    } else if (ev == MG_EV_ERROR || ev == MG_EV_CLOSE) {
+        MO_DBG_INFO("Rmt Ctrl connection -- %s", ev == MG_EV_CLOSE ? "closed" : "error");
+        rmt_ctrl_conn = nullptr;
+        if (mo_isInitialized()) {
+            rmt_ctrl_reconnect_timer = mo_getUptime() + 15;
+        }
+    }
+}
+
+bool rmt_ctrl_initialize(struct mg_mgr *mgr, const char *url, const char *auth_token, const char *ca) {
+    rmt_ctrl_mgr = mgr;
+    rmt_ctrl_url = url ? url : "";
+    rmt_ctrl_auth_token = auth_token ? auth_token : "";
+    rmt_ctrl_ca = ca ? ca : "";
+    return true;
+}
+
+void rmt_ctrl_loop() {
+    if (!mo_isInitialized()) {
+        return;
+    }
+
+    if (!*rmt_ctrl_url.c_str()) {
+        return;
+    }
+
+    if (!rmt_ctrl_conn && mo_getUptime() >= rmt_ctrl_reconnect_timer) {
+        MO_DBG_INFO("Rmt Ctrl connect to %s", rmt_ctrl_url.c_str());
+        rmt_ctrl_reconnect_timer += 15;
+
+        rmt_ctrl_conn = mg_ws_connect(
+            rmt_ctrl_mgr, 
+            rmt_ctrl_url.c_str(), 
+            rmt_ctrl_mongoose_cb, 
+            nullptr, 
+            "Authorization: Bearer %s\r\n", rmt_ctrl_auth_token.c_str());
+
+        MO_DBG_ERR("Rmt Ctrl connection failure");
+    }
+}
+
+void rmt_ctrl_deinitialize() {
+    if (rmt_ctrl_conn) {
+        rmt_ctrl_conn->is_closing = 1;
+    }
+    rmt_ctrl_conn = nullptr;
+    rmt_ctrl_mgr = nullptr;
+    rmt_ctrl_url.clear();
+    rmt_ctrl_auth_token.clear();
+}

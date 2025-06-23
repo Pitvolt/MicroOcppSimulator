@@ -12,6 +12,8 @@
 
 #include "evse.h"
 
+void (*mocpp_api_reboot_cb)();
+
 //simple matching function; takes * as a wildcard
 bool str_match(const char *query, const char *pattern) {
     size_t qi = 0, pi = 0;
@@ -29,6 +31,10 @@ bool str_match(const char *query, const char *pattern) {
     }
 
     return !query[qi] && !pattern[pi];
+}
+
+void mocpp_api_set_reboot_cb(void (*reboot_cb)()) {
+    mocpp_api_reboot_cb = reboot_cb;
 }
 
 int mocpp_api_call(const char *endpoint, MicroOcpp::Method method, const char *body, char *resp_body, size_t resp_body_size) {
@@ -68,7 +74,7 @@ int mocpp_api_call(const char *endpoint, MicroOcpp::Method method, const char *b
 
     Evse *evse = nullptr;
     if (connectorId >= 1 && connectorId < MO_NUM_EVSEID) {
-        evse = &connectors[connectorId-1];
+        evse = &connectors[connectorId];
     }
 
     //start different api endpoints
@@ -86,6 +92,7 @@ int mocpp_api_call(const char *endpoint, MicroOcpp::Method method, const char *b
         if (method == MicroOcpp::Method::POST) {
             if (request.containsKey("evPlugged")) {
                 evse->setEvPlugged(request["evPlugged"]);
+                evse->setEvsePlugged(request["evPlugged"]);
             }
             if (request.containsKey("evsePlugged")) {
             evse->setEvsePlugged(request["evsePlugged"]);
@@ -193,28 +200,28 @@ int mocpp_api2_call(const char *uri_raw, size_t uri_raw_len, MicroOcpp::Method m
         if (method != MicroOcpp::Method::POST) {
             return 405;
         }
-        if (evse_id < 0) {
+        if (evse_id <= 0) {
             snprintf(resp_body, resp_body_size, "no action taken");
             return 200;
         } else {
-            snprintf(resp_body, resp_body_size, "%s", connectors[evse_id-1].getEvPlugged() ? "EV already plugged" : "plugged in EV");
-            connectors[evse_id-1].setEvPlugged(true);
-            connectors[evse_id-1].setEvReady(true);
-            connectors[evse_id-1].setEvseReady(true);
+            snprintf(resp_body, resp_body_size, "%s", connectors[evse_id].getEvPlugged() ? "EV already plugged" : "plugged in EV");
+            connectors[evse_id].setEvPlugged(true);
+            connectors[evse_id].setEvReady(true);
+            connectors[evse_id].setEvseReady(true);
             return 200;
         }
     } else if (mg_match(uri, mg_str("/plugout"), NULL)) {
         if (method != MicroOcpp::Method::POST) {
             return 405;
         }
-        if (evse_id < 0) {
+        if (evse_id <= 0) {
             snprintf(resp_body, resp_body_size, "no action taken");
             return 200;
         } else {
-            snprintf(resp_body, resp_body_size, "%s", connectors[evse_id-1].getEvPlugged() ? "EV already unplugged" : "unplug EV");
-            connectors[evse_id-1].setEvPlugged(false);
-            connectors[evse_id-1].setEvReady(false);
-            connectors[evse_id-1].setEvseReady(false);
+            snprintf(resp_body, resp_body_size, "%s", connectors[evse_id].getEvPlugged() ? "EV already unplugged" : "unplug EV");
+            connectors[evse_id].setEvPlugged(false);
+            connectors[evse_id].setEvReady(false);
+            connectors[evse_id].setEvseReady(false);
             return 200;
         }
     } else if (mg_match(uri, mg_str("/end"), NULL)) {
@@ -222,7 +229,7 @@ int mocpp_api2_call(const char *uri_raw, size_t uri_raw_len, MicroOcpp::Method m
             return 405;
         }
         bool trackEvReady = false;
-        for (size_t i = 0; i < connectors.size(); i++) {
+        for (size_t i = 1; i < connectors.size(); i++) {
             trackEvReady |= connectors[i].getEvReady();
             connectors[i].setEvReady(false);
         }
@@ -245,7 +252,7 @@ int mocpp_api2_call(const char *uri_raw, size_t uri_raw_len, MicroOcpp::Method m
             }
         }
         bool trackEvReady = false;
-        for (size_t i = 0; i < connectors.size(); i++) {
+        for (size_t i = 1; i < connectors.size(); i++) {
             if (connectors[i].getEvPlugged()) {
                 bool trackEvReady = connectors[i].getEvReady();
                 connectors[i].setEvReady(ready);
@@ -290,19 +297,19 @@ int mocpp_api2_call(const char *uri_raw, size_t uri_raw_len, MicroOcpp::Method m
             return 400;
         }
 
-        if (evse_id <= 0) {
+        if (evse_id < 0) {
             snprintf(resp_body, resp_body_size, "invalid evse_id");
             return 400;
         }
 
-        bool trackAuthActive = connectors[evse_id-1].getSessionIdTag();
+        bool trackAuthActive = connectors[evse_id].getSessionIdTag();
 
-        if (!connectors[evse_id-1].presentNfcTag(id_buf, type_buf)) {
+        if (!connectors[evse_id].presentNfcTag(id_buf, type_buf)) {
             snprintf(resp_body, resp_body_size, "invalid id and / or type");
             return 400;
         }
 
-        bool authActive = connectors[evse_id-1].getSessionIdTag();
+        bool authActive = connectors[evse_id].getSessionIdTag();
 
         snprintf(resp_body, resp_body_size, "%s",
                 !trackAuthActive && authActive ? "authorize in progress" : 
@@ -352,4 +359,236 @@ int mocpp_api2_call(const char *uri_raw, size_t uri_raw_len, MicroOcpp::Method m
     }
 
     return 404;
+}
+
+bool mocpp_api3_call(const char *module, const char *operation, const char **params_key, const char **params_val, size_t params_len) {
+
+    int evse_id = -1;
+    int connector_id = -1;
+    const char *id = nullptr;
+    const char *type = nullptr;
+    int ready = -1; //boolean interpretation: pos = true, 0 = false, neg = undefined
+    int halfway = -1; //bool
+    int faulted = -1; //bool
+    int unlock_failed = -1; //bool
+    int refused_local_auth_list = -1; //bool
+    const char *charging_limit = nullptr;
+    
+    for (size_t i = 0; i < params_len; i++) {
+
+        const char *key = params_key[i];
+        const char *val = params_val[i];
+
+        bool val_isnum = true;
+        int val_num = 0;
+        for (size_t j = 0; val[j] != '\0'; j++) {
+            char c = val[j];
+            if (j == 0 && c == '-') {
+                continue;
+            }
+            if (c < '0' || c > '9') {
+                val_isnum = false;
+                break;
+            }
+            val_num *= 10;
+            val_num += c - '0';
+        }
+
+        if (val_isnum && val[0] == '0') {
+            val_num *= -1;
+        }
+
+        bool val_isbool = true;
+        bool val_bool = false;
+        if (!strcmp(val, "true")) {
+            val_bool = true;
+        } else if (!strcmp(val, "false")) {
+            val_bool = true;
+        } else {
+            val_isbool = false;
+        }
+
+        if (!strcmp(key, "evse_id")) {
+            if (!val_isnum || val_num < 0 || val_num >= MO_NUM_EVSEID) {
+                MO_DBG_ERR("invalid arg");
+                return false;
+            }
+            evse_id = val_num;
+        } else if (!strcmp(key, "connector_id")) {
+            if (!val_isnum || val_num != 1) {
+                MO_DBG_ERR("invalid arg");
+                return false;
+            }
+        } else if (!strcmp(key, "id")) {
+            id = val;
+        } else if (!strcmp(key, "type")) {
+            type = val;
+        } else if (!strcmp(key, "ready")) {
+            if (!val_isbool) {
+                MO_DBG_ERR("invalid arg");
+                return false;
+            }
+            ready = val_bool ? 1 : 0;
+        } else if (!strcmp(key, "halfway")) {
+            if (!val_isbool) {
+                MO_DBG_ERR("invalid arg");
+                return false;
+            }
+            halfway = val_bool ? 1 : 0;
+        } else if (!strcmp(key, "faulted")) {
+            if (!val_isbool) {
+                MO_DBG_ERR("invalid arg");
+                return false;
+            }
+            faulted = val_bool ? 1 : 0;
+        } else if (!strcmp(key, "unlock_failed")) {
+            if (!val_isbool) {
+                MO_DBG_ERR("invalid arg");
+                return false;
+            }
+            unlock_failed = val_bool ? 1 : 0;
+        } else if (!strcmp(key, "refused_local_auth_list")) {
+            if (!val_isbool) {
+                MO_DBG_ERR("invalid arg");
+                return false;
+            }
+            refused_local_auth_list = val_bool ? 1 : 0;
+        } else if (!strcmp(key, "charging_limit")) {
+            charging_limit = val;
+        } else {
+            MO_DBG_ERR("unknown param: %s", key);
+            return false;
+        }
+    }
+
+    if (!strcmp(operation, "authorize")) {
+
+        #if MO_ENABLE_V201
+        #define ID_LEN_MAX MO_IDTOKEN_LEN_MAX
+        #elif MO_ENABLE_V16
+        #define ID_LEN_MAX MO_IDTAG_LEN_MAX
+        #endif
+
+        if (!id || strlen(id) > ID_LEN_MAX) {
+            MO_DBG_ERR("invalid arg");
+            return false;
+        }
+
+        if (evse_id < 0) {
+            MO_DBG_ERR("invalid arg");
+            return false;
+        }
+
+        if (!connectors[evse_id].presentNfcTag(id, type)) {
+            MO_DBG_ERR("invalid arg");
+            return false;
+        }
+
+        MO_DBG_INFO("swiped NFC card");
+        return true;
+    } else if (!strcmp(module, "ev_emulator")) {
+
+        if (!strcmp(operation, "plugin")) {
+
+            for (size_t i = 1; i < connectors.size(); i++) {
+                connectors[1].setEvPlugged(true);
+                connectors[1].setEvReady(true);
+            }
+
+            MO_DBG_INFO("plug in EV");
+            return true;
+        } else if (!strcmp(operation, "plugout")) {
+
+            for (size_t i = 1; i < connectors.size(); i++) {
+                connectors[1].setEvPlugged(false);
+                connectors[1].setEvReady(false);
+            }
+
+            MO_DBG_INFO("plug out EV");
+            return true;
+        } else if (!strcmp(operation, "end")) {
+
+            for (size_t i = 1; i < connectors.size(); i++) {
+                connectors[i].setEvReady(false);
+            }
+
+            MO_DBG_INFO("EV ends charging");
+            return true;
+        } else if (!strcmp(operation, "state")) {
+
+            if (ready < 0) {
+                MO_DBG_ERR("invalid arg");
+                return false;
+            }
+
+            for (size_t i = 1; i < connectors.size(); i++) {
+                connectors[i].setEvReady(ready);
+            }
+
+            MO_DBG_INFO("EV %s", ready ? "ready to accept charge" : "not ready to charge");
+            return true;
+        }
+    } else if (!strcmp(module, "sut")) {
+
+        if (!strcmp(operation, "plugin")) {
+
+            if (evse_id <= 0) {
+                MO_DBG_ERR("invalid args");
+                return false;
+            }
+
+            connectors[evse_id].setEvsePlugged(true);
+            connectors[evse_id].setEvseReady(true);
+
+            MO_DBG_INFO("plug in EV");
+            return true;
+        } else if (!strcmp(operation, "plugout")) {
+
+            if (evse_id <= 0) {
+                MO_DBG_ERR("invalid args");
+                return false;
+            }
+
+            connectors[evse_id].setEvsePlugged(false);
+            connectors[evse_id].setEvseReady(false);
+
+            MO_DBG_INFO("plug in EV");
+            return true;
+        } else if (!strcmp(operation, "reboot")) {
+            if (!mocpp_api_reboot_cb) {
+                MO_DBG_ERR("reboot operation not supported");
+                return false;
+            }
+            mocpp_api_reboot_cb();
+            MO_DBG_INFO("triggered reboot");
+            return true;
+        } else if (!strcmp(operation, "state")) {
+
+            if (faulted >= 0) {
+                connectors[evse_id >= 0 ? evse_id : 0].setErrorCode(faulted > 0 ? "InternalError" : nullptr);
+            }
+
+            if (charging_limit) {
+                float limit_float = -1.f;
+                if (*charging_limit) {
+                    if (sscanf(charging_limit, "%f", &limit_float) != 1) {
+                        MO_DBG_ERR("invalid arg");
+                        return false;
+                    }
+
+                    if (charging_limit[strlen(charging_limit)-1] == 'A') {
+                        limit_float *= 230.f * 3.f;
+                    }
+                }
+
+                connectors[evse_id >= 0 ? evse_id : 0].setPowerLimit(limit_float);
+            }
+
+            MO_DBG_INFO("updated state");
+            return true;
+        }
+    }
+
+    MO_DBG_ERR("unsupported operation");
+    return false;
 }
