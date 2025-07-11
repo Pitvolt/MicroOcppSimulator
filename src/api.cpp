@@ -495,7 +495,7 @@ bool mocpp_api3_call(const char *module, const char *operation, const char **par
                 connectors[1].setEvReady(true);
             }
 
-            MO_DBG_INFO("plug in EV");
+            MO_DBG_INFO("plug in cable (EV side)");
             return true;
         } else if (!strcmp(operation, "plugout")) {
 
@@ -504,7 +504,7 @@ bool mocpp_api3_call(const char *module, const char *operation, const char **par
                 connectors[1].setEvReady(false);
             }
 
-            MO_DBG_INFO("plug out EV");
+            MO_DBG_INFO("plug out cable (EV side)");
             return true;
         } else if (!strcmp(operation, "end")) {
 
@@ -540,7 +540,7 @@ bool mocpp_api3_call(const char *module, const char *operation, const char **par
             connectors[evse_id].setEvsePlugged(true);
             connectors[evse_id].setEvseReady(true);
 
-            MO_DBG_INFO("plug in EV");
+            MO_DBG_INFO("plug in cable (EVSE side)");
             return true;
         } else if (!strcmp(operation, "plugout")) {
 
@@ -552,7 +552,7 @@ bool mocpp_api3_call(const char *module, const char *operation, const char **par
             connectors[evse_id].setEvsePlugged(false);
             connectors[evse_id].setEvseReady(false);
 
-            MO_DBG_INFO("plug in EV");
+            MO_DBG_INFO("plug out cable (EVSE side)");
             return true;
         } else if (!strcmp(operation, "reboot")) {
             if (!mocpp_api_reboot_cb) {

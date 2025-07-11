@@ -52,8 +52,8 @@ void Evse::setup(MO_Context *ctx, MO_FilesystemAdapter *filesystem) {
         mo_v16_addErrorDataInput(ctx, connectorId, [] (unsigned int, void *userData) -> MO_ErrorData {
             auto evse = reinterpret_cast<Evse*>(userData);
             MO_ErrorData errorData;
-            mo_ErrorData_init(&errorData);
-            mo_ErrorData_setErrorCode(&errorData, *evse->errorCode.c_str() ? evse->errorCode.c_str() : (const char*) nullptr);
+            mo_errorData_init(&errorData);
+            mo_errorData_setErrorCode(&errorData, *evse->errorCode.c_str() ? evse->errorCode.c_str() : (const char*) nullptr);
             return errorData;
         }, this);
     }
@@ -280,7 +280,7 @@ bool Evse::presentNfcTag(const char *uid, const char *type) {
     #endif //MO_ENABLE_V16
     #if MO_ENABLE_V201
     if (mo_getOcppVersion2(ctx) == MO_OCPP_V201) {
-        MicroOcpp::Ocpp201::IdToken idToken;
+        MicroOcpp::v201::IdToken idToken;
         if (!idToken.parseCstr(uid, type)) {
             MO_DBG_ERR("could not parse idToken (%s, %s)", uid, type);
             return false;
@@ -359,7 +359,7 @@ std::string Evse::getTransactionId() {
     #endif //MO_ENABLE_V16
     #if MO_ENABLE_V201
     if (mo_getOcppVersion2(ctx) == MO_OCPP_V201) {
-        res = mo_v201_getTransactionId2(ctx, connectorId) ? mo_v201_getTransactionId2(ctx, connectorId) : "";
+        res = mo_getTransactionId2(ctx, connectorId) ? mo_getTransactionId2(ctx, connectorId) : "";
     }
     #endif //MO_ENABLE_V201
 

@@ -243,12 +243,13 @@ void rmt_ctrl_mongoose_cb(struct mg_connection *c, int ev, void *ev_data) {
             MO_DBG_WARN("Insecure connection (WS)");
         }
     } else if (ev == MG_EV_WS_OPEN) {
-        MO_DBG_INFO("Rmt Ctrl connection %s -- connected!", rmt_ctrl_url.c_str());
+        MO_DBG_INFO("Rmt Ctrl connected!");
+        MO_DBG_DEBUG("(connection %s)", rmt_ctrl_url.c_str());
     } else if (ev == MG_EV_WS_MSG) {
         struct mg_ws_message *wm = (struct mg_ws_message *) ev_data;
         rmt_ctrl_process_msg((const char*) wm->data.buf, wm->data.len);
     } else if (ev == MG_EV_ERROR || ev == MG_EV_CLOSE) {
-        MO_DBG_INFO("Rmt Ctrl connection -- %s", ev == MG_EV_CLOSE ? "closed" : "error");
+        MO_DBG_INFO("Rmt Ctrl connection %s", ev == MG_EV_CLOSE ? "closed" : "error");
         rmt_ctrl_conn = nullptr;
         if (mo_isInitialized()) {
             rmt_ctrl_reconnect_timer = mo_getUptime() + 15;
@@ -274,7 +275,8 @@ void rmt_ctrl_loop() {
     }
 
     if (!rmt_ctrl_conn && mo_getUptime() >= rmt_ctrl_reconnect_timer) {
-        MO_DBG_INFO("Rmt Ctrl connect to %s", rmt_ctrl_url.c_str());
+        MO_DBG_INFO("Rmt Ctrl create connection");
+        MO_DBG_DEBUG("(connection %s)", rmt_ctrl_url.c_str());
         rmt_ctrl_reconnect_timer += 15;
 
         rmt_ctrl_conn = mg_ws_connect(
