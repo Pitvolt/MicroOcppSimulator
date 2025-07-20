@@ -49,7 +49,7 @@ void mocpp_api_set_reboot_cb(void (*reboot_cb)()) {
 
 void mocpp_api_loop() {
     for (auto it = mocpp_api_timer.begin(); it != mocpp_api_timer.end();) {
-        if (it->first > mo_getUptime()) {
+        if (mo_getUptime() > it->first) {
             it->second();
             it = mocpp_api_timer.erase(it);
         } else {
@@ -67,12 +67,10 @@ void mocpp_api_loop() {
 
             // apply EVSE readiness
             if (m_evse_ready_time[i] >= mo_getUptime() && !connectors[i].getEvseReady()) {
-                MO_DBG_DEBUG("TRACE");
                 connectors[i].setEvseReady(true);
             }
         } else {
             if (connectors[i].getEvseReady()) {
-                MO_DBG_DEBUG("TRACE");
                 connectors[i].setEvseReady(false);
             }
             m_evse_ready_time[i] = 0;
@@ -87,12 +85,10 @@ void mocpp_api_loop() {
 
             // apply EV readiness
             if (m_ev_ready_time[i] >= mo_getUptime() && !connectors[i].getEvReady()) {
-                MO_DBG_DEBUG("TRACE");
                 connectors[i].setEvReady(true);
             }
         } else {
             if (connectors[i].getEvReady()) {
-                MO_DBG_DEBUG("TRACE");
                 connectors[i].setEvReady(false);
             }
             m_ev_ready_time[i] = 0;
