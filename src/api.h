@@ -19,6 +19,8 @@ enum class Method {
 
 void mocpp_api_set_reboot_cb(void (*reboot_cb)());
 
+void mocpp_api_loop();
+
 int mocpp_api_call(const char *endpoint, MicroOcpp::Method method, const char *body, char *resp_body, size_t resp_body_size);
 
 int mocpp_api2_call(const char *endpoint, size_t endpoint_len, MicroOcpp::Method method, const char *query, size_t query_len, char *resp_body, size_t resp_body_size);

@@ -26,9 +26,6 @@ bool g_runSimulator = true;
 bool g_isUpAndRunning = false; //if the initial BootNotification and StatusNotifications got through + 1s delay
 int32_t g_bootNotificationTime = -1;
 
-bool g_scheduleReboot;
-int32_t g_scheduleRebootTimer;
-
 #define MO_NETLIB_MONGOOSE 1
 #define MO_NETLIB_WASM 2
 
@@ -261,9 +258,13 @@ int main() {
     });
 
     mocpp_api_set_reboot_cb([] () {
-        g_scheduleReboot = true;
-        g_scheduleRebootTimer = mo_getUptime() + 5;
+        g_runSimulator = false;
     });
+
+    MO_FTPConfig ftpConfig;
+    memset(&ftpConfig, 0, sizeof(ftpConfig));
+    ftpConfig.tls_only = true;
+    mo_setFtpConfig2(mo_getApiContext(), ftpConfig);
 
     //Finalize MO setup. Now, the configuration of MO cannot be changed anymore
     mo_setup();
@@ -287,6 +288,8 @@ int main() {
             g_isUpAndRunning = true;
             MO_MEM_RESET();
         }
+
+        mocpp_api_loop();
     }
 
     printf("[Sim] Shutting down Simulator\n");

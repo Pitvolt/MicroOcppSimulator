@@ -285,7 +285,16 @@ bool Evse::presentNfcTag(const char *uid, const char *type) {
             MO_DBG_ERR("could not parse idToken (%s, %s)", uid, type);
             return false;
         }
-        res = mo_authorizeTransaction2(ctx, connectorId, idToken.get(), idToken.getType());
+
+        if (mo_isTransactionActive2(ctx, connectorId)) {
+            if (!strcmp(uid, mo_getTransactionIdTag2(ctx, connectorId))) {
+                res = mo_deauthorizeTransaction2(ctx, connectorId, idToken.get(), idToken.getType());
+            } else {
+                MO_DBG_INFO("RFID card denied");
+            }
+        } else {
+            res = mo_authorizeTransaction2(ctx, connectorId, idToken.get(), idToken.getType());
+        }
     }
     #endif //MO_ENABLE_V201
 

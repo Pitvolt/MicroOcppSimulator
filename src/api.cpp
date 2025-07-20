@@ -5,6 +5,7 @@
 #include "api.h"
 #include "mongoose.h"
 
+#include <MicroOcpp.h>
 #include <MicroOcpp/Debug.h>
 #include <MicroOcpp/Core/Memory.h>
 #include <MicroOcpp/Model/Common/EvseId.h>
@@ -13,6 +14,15 @@
 #include "evse.h"
 
 void (*mocpp_api_reboot_cb)();
+
+int32_t m_evse_ready_time [MO_NUM_EVSEID];
+int32_t m_ev_ready_time [MO_NUM_EVSEID];
+
+std::vector<std::pair<int32_t,std::function<void(void)>>> mocpp_api_timer;
+
+void mocpp_api_schedule_event(int32_t delaySecs, std::function<void(void)> event) {
+    mocpp_api_timer.emplace_back(mo_getUptime() + delaySecs, event);
+}
 
 //simple matching function; takes * as a wildcard
 bool str_match(const char *query, const char *pattern) {
@@ -35,6 +45,59 @@ bool str_match(const char *query, const char *pattern) {
 
 void mocpp_api_set_reboot_cb(void (*reboot_cb)()) {
     mocpp_api_reboot_cb = reboot_cb;
+}
+
+void mocpp_api_loop() {
+    for (auto it = mocpp_api_timer.begin(); it != mocpp_api_timer.end();) {
+        if (it->first > mo_getUptime()) {
+            it->second();
+            it = mocpp_api_timer.erase(it);
+        } else {
+            it++;
+        }
+    }
+
+    for (unsigned int i = 1; i < MO_NUM_EVSEID; i++) {
+        if (connectors[i].getEvPlugged() && mo_ocppPermitsCharge2(mo_getApiContext(), i)) {
+            
+            // schedule EVSE readiness
+            if (!m_evse_ready_time[i]) {
+                m_evse_ready_time[i] = mo_getUptime() + 1;
+            }
+
+            // apply EVSE readiness
+            if (m_evse_ready_time[i] >= mo_getUptime() && !connectors[i].getEvseReady()) {
+                MO_DBG_DEBUG("TRACE");
+                connectors[i].setEvseReady(true);
+            }
+        } else {
+            if (connectors[i].getEvseReady()) {
+                MO_DBG_DEBUG("TRACE");
+                connectors[i].setEvseReady(false);
+            }
+            m_evse_ready_time[i] = 0;
+        }
+        
+        if (connectors[i].getEvPlugged() && mo_ocppPermitsCharge2(mo_getApiContext(), i) && connectors[i].getEvseReady()) {
+            
+            // schedule EV readiness
+            if (!m_ev_ready_time[i]) {
+                m_ev_ready_time[i] = mo_getUptime() + 1;
+            }
+
+            // apply EV readiness
+            if (m_ev_ready_time[i] >= mo_getUptime() && !connectors[i].getEvReady()) {
+                MO_DBG_DEBUG("TRACE");
+                connectors[i].setEvReady(true);
+            }
+        } else {
+            if (connectors[i].getEvReady()) {
+                MO_DBG_DEBUG("TRACE");
+                connectors[i].setEvReady(false);
+            }
+            m_ev_ready_time[i] = 0;
+        }
+    }
 }
 
 int mocpp_api_call(const char *endpoint, MicroOcpp::Method method, const char *body, char *resp_body, size_t resp_body_size) {
@@ -491,8 +554,9 @@ bool mocpp_api3_call(const char *module, const char *operation, const char **par
         if (!strcmp(operation, "plugin")) {
 
             for (size_t i = 1; i < connectors.size(); i++) {
-                connectors[1].setEvPlugged(true);
-                connectors[1].setEvReady(true);
+                connectors[i].setEvPlugged(true);
+                // connectors[i].setEvReady(true);
+                // loop will set EV ready once EVSE ready
             }
 
             MO_DBG_INFO("plug in cable (EV side)");
@@ -538,7 +602,8 @@ bool mocpp_api3_call(const char *module, const char *operation, const char **par
             }
 
             connectors[evse_id].setEvsePlugged(true);
-            connectors[evse_id].setEvseReady(true);
+            // connectors[evse_id].setEvseReady(true);
+            // loop will set EVSE ready once charging allowed ready
 
             MO_DBG_INFO("plug in cable (EVSE side)");
             return true;
@@ -559,7 +624,9 @@ bool mocpp_api3_call(const char *module, const char *operation, const char **par
                 MO_DBG_ERR("reboot operation not supported");
                 return false;
             }
-            mocpp_api_reboot_cb();
+            mocpp_api_schedule_event(3, [] () {
+                mocpp_api_reboot_cb();
+            });
             MO_DBG_INFO("triggered reboot");
             return true;
         } else if (!strcmp(operation, "state")) {
