@@ -286,7 +286,7 @@ bool Evse::presentNfcTag(const char *uid, const char *type) {
             return false;
         }
 
-        if (mo_isTransactionActive2(ctx, connectorId)) {
+        if (mo_getTransactionIdTag2(ctx, connectorId)) {
             if (!strcmp(uid, mo_getTransactionIdTag2(ctx, connectorId))) {
                 res = mo_deauthorizeTransaction2(ctx, connectorId, idToken.get(), idToken.getType());
             } else {
