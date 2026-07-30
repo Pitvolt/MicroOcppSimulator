@@ -12,7 +12,7 @@
 	url = https://github.com/cesanta/mongoose
 [submodule "webapp-src"]
 	path = webapp-src
-	url = https://github.com/agruenb/arduino-ocpp-dashboard.git
+	url = https://github.com/Pitvolt/micro-ocpp-dashboard.git
 [submodule "lib/mbedtls"]
 	path = lib/mbedtls
 	url = https://github.com/Mbed-TLS/mbedtls
