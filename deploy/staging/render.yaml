@@ -1,0 +1,32 @@
+# Render.com config for the staging OCPP simulator (deploy/staging/README.md).
+# Zero-cost web service on the free tier: no card required, auto-sleeps at
+# 15 min idle, wakes on request in ~30s. Same STATION_ID / WSS_URL contract
+# as the Fly bundle; the Dockerfile is reused as-is.
+#
+# Bring-up (one-time in the Render dashboard):
+#   1. Log in at https://dashboard.render.com (GitHub SSO fine, no card)
+#   2. New -> Blueprint -> connect Pitvolt/MicroOcppSimulator repo
+#   3. Render reads this file and creates the service; deploy runs
+#      automatically from the deploy/staging/Dockerfile
+#   4. Public URL after first deploy: https://pitvolt-ocpp-sim.onrender.com
+
+services:
+  - type: web
+    name: pitvolt-ocpp-sim
+    runtime: docker
+    plan: free
+    # Build context is the repo root (Dockerfile COPYs the whole tree in);
+    # dockerfilePath is relative to that root.
+    dockerfilePath: ./deploy/staging/Dockerfile
+    dockerContext: .
+    envVars:
+      - key: STATION_ID
+        value: PVE2-VAJN
+      - key: WSS_URL
+        value: wss://staging.ocpp.pitvolt.com
+      # AUTH_KEY deliberately empty: staging OCPP endpoint uses station-id
+      # auth only. Set via the Render dashboard if the endpoint ever adds a
+      # password check (keep it out of source control).
+    # Free tier sleeps after 15 min idle; wakes on the first request.
+    healthCheckPath: /
+    autoDeploy: true

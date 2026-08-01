@@ -8,33 +8,37 @@ Runs the same binary as the upstream repo (built by `deploy/staging/Dockerfile`)
 just with a runtime entrypoint that writes `mo_store/ws-conn.jsn` from
 `STATION_ID` + `WSS_URL` env vars so one image works for any charger.
 
-## First-time bring-up
+## First-time bring-up (Render.com — no card required)
 
-Prereq: `brew install flyctl` and `flyctl auth login`.
+Free web-service tier, 750 h/month, sleeps after 15 min idle, wakes in ~30s.
+
+1. Log in at <https://dashboard.render.com> (GitHub SSO — no card asked).
+2. **New → Blueprint → Connect** the `Pitvolt/MicroOcppSimulator` repo.
+3. Render reads `deploy/staging/render.yaml`, creates the service, and
+   deploys from `deploy/staging/Dockerfile`. First build takes ~5 min.
+4. Public URL: `https://pitvolt-ocpp-sim.onrender.com` — the simulator's
+   web UI. Drive charging sessions from the browser; staging
+   (`stg.api.pitvolt.com`) treats it as a real charger.
+
+Change the targeted charger from the Render dashboard → Environment →
+edit `STATION_ID` → save (Render redeploys automatically).
+
+## Alternative: Fly.io bring-up (requires a card)
 
 ```bash
-cd deploy/staging
-# Create the Fly app (uses this fly.toml, does not deploy yet).
+brew install flyctl && flyctl auth login
 flyctl launch --no-deploy --copy-config --name pitvolt-ocpp-sim \
-  --org personal --region fra
-# Build + deploy from the REPO ROOT (Dockerfile expects the whole repo).
-cd ../..
-flyctl deploy --config deploy/staging/fly.toml --dockerfile deploy/staging/Dockerfile
+  --org personal --region fra --config deploy/staging/fly.toml
+flyctl deploy --config deploy/staging/fly.toml \
+  --dockerfile deploy/staging/Dockerfile
+# URL: https://pitvolt-ocpp-sim.fly.dev
 ```
-
-Once live: <https://pitvolt-ocpp-sim.fly.dev> — the simulator's web UI.
-Drive charging sessions from the browser; the running backend on staging
-(`stg.api.pitvolt.com`) treats it as a real charger.
 
 ## Retarget a different charger
 
-```bash
-flyctl secrets set STATION_ID=<new-station-id>
-# For a completely different environment:
-flyctl secrets set WSS_URL=wss://<other-env>/ocpp
-```
-
-Fly restarts the machine automatically.
+- **Render**: Dashboard → Environment → edit `STATION_ID` (or `WSS_URL`) →
+  save. Redeploys automatically.
+- **Fly**: `flyctl secrets set STATION_ID=<new-station-id>`.
 
 ## Local dry-run without Fly
 
