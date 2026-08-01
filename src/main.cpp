@@ -4,6 +4,8 @@
 
 #include <iostream>
 #include <signal.h>
+#include <string>
+#include <cstdio>
 
 #include <mbedtls/platform.h>
 
@@ -39,6 +41,43 @@ unsigned int g_bootNotificationTime = 0;
 
 struct mg_mgr mgr;
 MicroOcpp::MOcppMongooseClient *osock;
+
+// System CA bundle (populated at boot from CA_CERT_PATH env or /etc/ssl/certs).
+// Needed for TLS handshake against wss:// endpoints (Let's Encrypt chains,
+// etc.) -- mbedtls has no default trust store, so a nullptr ca_cert fails
+// the handshake. Stored as a static string so its lifetime matches the
+// socket (the MOcppMongooseClient stores the pointer, does not copy).
+static std::string g_ca_cert_pem;
+
+static const char *load_system_ca_cert() {
+    const char *env_path = std::getenv("CA_CERT_PATH");
+    const char *candidates[] = {
+        env_path,
+        "/etc/ssl/certs/ca-certificates.crt",
+        "/etc/ssl/cert.pem",
+        nullptr,
+    };
+    for (const char *p : candidates) {
+        if (!p || !*p) continue;
+        if (FILE *f = std::fopen(p, "rb")) {
+            std::fseek(f, 0, SEEK_END);
+            long sz = std::ftell(f);
+            std::fseek(f, 0, SEEK_SET);
+            if (sz > 0) {
+                g_ca_cert_pem.resize(static_cast<size_t>(sz));
+                std::fread(&g_ca_cert_pem[0], 1, static_cast<size_t>(sz), f);
+            }
+            std::fclose(f);
+            if (!g_ca_cert_pem.empty()) {
+                std::cerr << "loaded CA bundle from " << p
+                          << " (" << g_ca_cert_pem.size() << " bytes)\n";
+                return g_ca_cert_pem.c_str();
+            }
+        }
+    }
+    std::cerr << "no CA bundle found; TLS wss:// endpoints will fail\n";
+    return nullptr;
+}
 
 #elif MO_NETLIB == MO_NETLIB_WASM
 #include <emscripten.h>
@@ -165,11 +204,12 @@ int main() {
 
     mg_http_listen(&mgr, api_url, http_serve, (void*)api_url);     // Create listening connection
 
+    const char *ca_cert_arg = load_system_ca_cert();
     osock = new MicroOcpp::MOcppMongooseClient(&mgr,
         "ws://echo.websocket.events",
         "charger-01",
         "",
-        "",
+        ca_cert_arg,
         filesystem,
         g_isOcpp201 ?
             MicroOcpp::ProtocolVersion{2,0,1} :

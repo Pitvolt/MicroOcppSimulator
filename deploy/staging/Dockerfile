@@ -11,7 +11,9 @@ RUN apk update && \
     git \
     cmake \
     openssl-dev \
-    build-base
+    build-base \
+    ca-certificates && \
+    update-ca-certificates
 
 # Clone fresh from GitHub with submodules recursively -- avoids relying on
 # either .git being COPYed (Render strips it) or the host performing a
