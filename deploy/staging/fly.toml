@@ -1,0 +1,40 @@
+# Fly.io config for the staging OCPP simulator (deploy/staging/README.md).
+# Small always-off machine that auto-starts on request; ~$0/month idle.
+#
+# Bring-up:
+#   cd deploy/staging
+#   flyctl launch --no-deploy --copy-config --name pitvolt-ocpp-sim --org personal --region fra
+#   flyctl deploy --dockerfile Dockerfile --config fly.toml
+#
+# Override the target charger without redeploying:
+#   flyctl secrets set STATION_ID=<new-station-id>
+#
+# Public URL after deploy: https://pitvolt-ocpp-sim.fly.dev
+# WARNING: publicly reachable. Only use against staging chargers.
+
+app = "pitvolt-ocpp-sim"
+primary_region = "fra"
+
+[build]
+  # Build context is the REPO ROOT (fly deploy runs from deploy/staging/
+  # so we escape one dir up); the Dockerfile COPYs the whole repo in.
+  dockerfile = "Dockerfile"
+
+[env]
+  STATION_ID = "PVE2-VAJN"
+  WSS_URL = "wss://staging.ocpp.pitvolt.com"
+  # AUTH_KEY is deliberately empty: staging OCPP endpoint uses station-id
+  # auth only (see docs/architecture note, 2026-08-01). Set as a fly secret
+  # if the endpoint ever adds a password check.
+
+[http_service]
+  internal_port = 8000
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
+
+[[vm]]
+  cpu_kind = "shared"
+  cpus = 1
+  memory_mb = 512
