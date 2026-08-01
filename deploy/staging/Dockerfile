@@ -13,18 +13,27 @@ RUN apk update && \
     openssl-dev \
     build-base
 
+# Clone fresh from GitHub with submodules recursively -- avoids relying on
+# either .git being COPYed (Render strips it) or the host performing a
+# recursive checkout. Rebuilds pick up the LATEST main; pin to a tag via
+# `--branch <tag>` when a specific release matters.
+# NB: the parent's .gitmodules points at Pitvolt/* forks, so `--recursive`
+# fetches the exact submodules the staging bundle expects.
+ARG SIM_REF=main
+RUN git clone --depth 1 --branch "${SIM_REF}" --recurse-submodules \
+      --shallow-submodules \
+      https://github.com/Pitvolt/MicroOcppSimulator.git /MicroOcppSimulator
+
 WORKDIR /MicroOcppSimulator
 
-# Bring in the whole repo -- Docker build context is the repo root when
-# `docker build -f deploy/staging/Dockerfile .` runs.
-COPY . .
-
-RUN git submodule init && git submodule update
 RUN cmake -S . -B ./build -DCMAKE_POLICY_VERSION_MINIMUM=3.5
 RUN cmake --build ./build -j 16 --target mo_simulator -j 16
 RUN chmod +x /MicroOcppSimulator/build/mo_simulator
 
-COPY deploy/staging/entrypoint.sh /usr/local/bin/entrypoint.sh
+# The entrypoint is bundled with the freshly-cloned tree, but copy the
+# staging-bundle canonical version onto /usr/local/bin so any future edit
+# to the file on main takes effect on the next rebuild.
+RUN cp /MicroOcppSimulator/deploy/staging/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
 EXPOSE 8000
