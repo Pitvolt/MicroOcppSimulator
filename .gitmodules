@@ -1,18 +1,18 @@
 [submodule "lib/ArduinoJson"]
 	path = lib/ArduinoJson
-	url = https://github.com/bblanchon/ArduinoJson.git
+	url = https://github.com/Pitvolt/ArduinoJson.git
 [submodule "lib/MicroOcpp"]
 	path = lib/MicroOcpp
-	url = https://github.com/matth-x/MicroOcpp
+	url = https://github.com/Pitvolt/MicroOcpp.git
 [submodule "lib/MicroOcppMongoose"]
 	path = lib/MicroOcppMongoose
-	url = https://github.com/matth-x/MicroOcppMongoose
+	url = https://github.com/Pitvolt/MicroOcppMongoose.git
 [submodule "lib/mongoose"]
 	path = lib/mongoose
-	url = https://github.com/cesanta/mongoose
+	url = https://github.com/Pitvolt/mongoose.git
 [submodule "webapp-src"]
 	path = webapp-src
 	url = https://github.com/Pitvolt/micro-ocpp-dashboard.git
 [submodule "lib/mbedtls"]
 	path = lib/mbedtls
-	url = https://github.com/Mbed-TLS/mbedtls
+	url = https://github.com/Pitvolt/mbedtls.git
