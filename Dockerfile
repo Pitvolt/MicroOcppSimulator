@@ -16,7 +16,9 @@ WORKDIR /MicroOcppSimulator
 COPY . .
 
 RUN git submodule init && git submodule update
-RUN cmake -S . -B ./build
+# Alpine ships cmake 4+, which drops support for `cmake_minimum_required` < 3.5.
+# The bundled mbedtls submodule still declares 3.4, so pass the compat flag.
+RUN cmake -S . -B ./build -DCMAKE_POLICY_VERSION_MINIMUM=3.5
 RUN cmake --build ./build -j 16 --target mo_simulator -j 16
 
 # Grant execute permissions to the shell script
