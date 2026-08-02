@@ -20,8 +20,13 @@ services:
     dockerfilePath: ./deploy/staging/Dockerfile
     dockerContext: .
     envVars:
+      # PVE2-3BYA is the "Simulator Playground" charger on the e2e tenant
+      # (spec 2026-08-02): a dedicated station id for user-driven simulator
+      # runs, kept SEPARATE from PVE2-VAJN which is reserved for the CI
+      # integration-test suite. OCPP allows only one live connection per
+      # station id, so sharing would race with every CI deploy.
       - key: STATION_ID
-        value: PVE2-VAJN
+        value: PVE2-3BYA
       - key: WSS_URL
         value: wss://staging.ocpp.pitvolt.com
       # AUTH_KEY deliberately empty: staging OCPP endpoint uses station-id
